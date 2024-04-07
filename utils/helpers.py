@@ -11,6 +11,29 @@ from sklearn import cluster
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+def introduce_label_noise(y, epsilon):
+
+    min_y = min(y)
+    tmp_y = np.array([(i - min_y) for i in y])
+
+    # Number of samples
+    n_samples = tmp_y.shape[0]
+    n_classes = len(set(tmp_y))
+    # Create the noise transition matrix
+
+    T = np.full((n_classes, n_classes), epsilon / (n_classes - 1))
+    np.fill_diagonal(T, 1 - epsilon)
+    
+    # Apply noise
+    y_noisy = np.empty_like(tmp_y)
+    for i in range(n_samples):
+        current_label = tmp_y[i]
+        y_noisy[i] = np.random.choice(n_classes, p=T[current_label])
+
+    y_noisy = [(i + min_y) for i in y_noisy]
+
+    return y_noisy
+
 def plot_time_series_class(data, class_name, ax, n_steps=10):
     time_series_df = pd.DataFrame(data)
 
@@ -28,122 +51,157 @@ def plot_time_series_class(data, class_name, ax, n_steps=10):
         alpha=.125
     )
     ax.set_title(class_name)
-  
-def train_model(model, model_class, train_dataset, val_dataset, criterion, criterion_class, logger, embedding_size, n_classes, train_target, val_target, seed, n_epochs):
-  # optimizer_ae = torch.optim.Adam(model.parameters(), lr=1e-4)
-  # optimizer_class = torch.optim.Adam(model_class.parameters(), lr=1e-4)
 
-  history = dict(train_ae=[], train_class=[], val_ae=[], val_class=[])
+def train_ae(model, n_epochs, criterion, train_dataset, val_dataset, logger):
+  optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
   best_model_wts = copy.deepcopy(model.state_dict())
   best_loss = 10000.0
-  # loss_centroids = CentroidLoss(embedding_size, n_classes, reduction='none').to(device)
-  # kmeans = cluster.KMeans(n_clusters=n_classes, random_state=seed)
-
-  optimizer = torch.optim.Adam(
-        list(model.parameters()) + list(model_class.parameters()),
-        lr=1e-3)
   
-  train_time = time()
+  all_train_loss_ae = []
+  all_val_loss_ae = []
   for epoch in range(1, n_epochs + 1):
     epoch_time = time()
 
-    # if epoch == 1:
-    #     # Init cluster centers with KMeans
-    #     embedding = []
-    #     with torch.no_grad():
-    #         model.eval()
-    #         loss_centroids.eval()
-    #         for seq_true in train_dataset:
-    #             seq_true = seq_true.to(device)
-    #             output = model.encoder(seq_true)
-    #             embedding.append(output.squeeze().cpu().numpy())
-    #     embedding = np.concatenate(embedding, axis=0)
-    #     embedding = embedding.reshape(train_target.size, embedding_size)
-    #     # embedding = np.stack((embedding, train_target), axis=1)
-    #     predicted = kmeans.fit_predict(embedding)
-    #     train_targets = np.array(train_target)
-    #     train_targets = np.array([i-1 for i in train_targets])
-    #     reassignment, accuracy = cluster_accuracy(train_targets, predicted)
-    #     cluster_centers = kmeans.cluster_centers_[
-    #         list(dict(sorted({y: x for x, y in reassignment.items()}.items())).values())]
-    #     cluster_centers = torch.tensor(cluster_centers, dtype=torch.float, requires_grad=True).to(device)
-    #     with torch.no_grad():
-    #         # initialise the cluster centers
-    #         loss_centroids.state_dict()["centers"].copy_(cluster_centers)
-
     model = model.train()
-    model_class = model_class.train()
-    # loss_centroids.train()
 
     train_losses = []
-    target_idx = 0
-    train_targets = np.array(train_target)
     for seq_true in train_dataset:
       optimizer.zero_grad()
 
       seq_true = seq_true.to(device)
       seq_pred = model(seq_true)
-      embedding = model.encoder(seq_true).squeeze().to(device)
-      y_pred = model_class(embedding)
 
       loss_ae = criterion(seq_pred, seq_true)
 
-      loss_class = criterion_class(y_pred, torch.tensor([train_targets[target_idx]/n_classes], dtype=torch.float32, device = device))
-      target_idx += 1
-
-      # loss_cntrs = loss_centroids(embedding, train_targets[target_idx])
-
-      # loss = 0.5 * loss_ae + 0.5 * loss_cntrs.mean()
-
       loss_ae.backward()
-      loss_class.backward()
       optimizer.step()
 
-      train_losses.append([loss_ae.item(), loss_class.item()])
+      train_losses.append(loss_ae.item())
 
     val_losses = []
     model = model.eval()
-    model_class = model_class.eval()
 
-    val_targets = np.array(val_target)
-    target_idx = 0
     with torch.no_grad():
       for seq_true in val_dataset:
 
         seq_true = seq_true.to(device)
         seq_pred = model(seq_true)
-        embedding = model.encoder(seq_true).squeeze().to(device)
-        y_pred = model_class(embedding)
 
         loss_ae = criterion(seq_pred, seq_true)
-        loss_class = criterion_class(y_pred, torch.tensor([val_targets[target_idx]/n_classes], dtype=torch.float32, device = device))
-        target_idx += 1
-        val_losses.append([loss_ae.item(), loss_class.item()])
+        val_losses.append(loss_ae.item())
 
     train_losses = np.array(train_losses)
     val_losses = np.array(val_losses)
+    train_loss_ae = np.mean(train_losses)
+    val_loss_ae = np.mean(val_losses)
 
-    train_loss_ae = np.mean(train_losses[:, 0])
-    train_loss_class = np.mean(train_losses[:, 1])
-
-    val_loss_ae = np.mean(val_losses[:, 0])
-    val_loss_class = np.mean(val_losses[:, 1])
-
-    history['train_ae'].append(train_loss_ae)
-    history['train_class'].append(train_loss_class)
-
-    history['val_ae'].append(val_loss_ae)
-    history['val_class'].append(val_loss_class)
+    all_train_loss_ae.append(train_loss_ae)
+    all_val_loss_ae.append(val_loss_ae)
 
     if val_loss_ae < best_loss:
       best_loss = val_loss_ae
       best_model_wts = copy.deepcopy(model.state_dict())
 
     epoch_time = time() - epoch_time
-    logger.info(f'Epoch {epoch}: AE TL: {train_loss_ae:.3f}, AE VL:{val_loss_ae:.3f}, CLS TL: {train_loss_class:.3f}, CLS VL:{val_loss_class:.3f}, Epoch time: {epoch_time:.3f}s' )
+    logger.info(f'Epoch {epoch}: AE TL: {train_loss_ae:.3f}, AE VL:{val_loss_ae:.3f}, Epoch time: {epoch_time:.3f}s' )
 
-  model.load_state_dict(best_model_wts)
+  return model, best_model_wts, all_train_loss_ae, all_val_loss_ae
+
+def train_class(embeddings_train, embeddings_val, model_class, n_epochs, criterion_class, train_target, train_dataset, val_target, val_dataset, n_classes, logger):
+  optimizer = torch.optim.Adam(model_class.parameters(), lr=1e-3)
+
+  best_model_wts = copy.deepcopy(model_class.state_dict())
+  best_loss = 10000.0
+  
+  all_train_loss_class = []
+  all_val_loss_class = []
+  for epoch in range(1, n_epochs + 1):
+    epoch_time = time()
+
+    model_class = model_class.train()
+
+    train_losses = []
+    target_idx = 0
+    train_targets = np.array(train_target)
+    for embedding in embeddings_train:
+      optimizer.zero_grad()
+
+      y_pred = model_class(embedding)
+
+      loss_class = criterion_class(y_pred, torch.tensor([train_targets[target_idx]/n_classes], dtype=torch.float32, device = device))
+      target_idx += 1
+
+      loss_class.backward()
+      optimizer.step()
+
+      train_losses.append(loss_class.item())
+
+    val_losses = []
+
+    model_class = model_class.eval()
+
+    val_targets = np.array(val_target)
+    target_idx = 0
+    with torch.no_grad():
+      for embedding in embeddings_val:
+
+        y_pred = model_class(embedding)
+
+        loss_class = criterion_class(y_pred, torch.tensor([val_targets[target_idx]/n_classes], dtype=torch.float32, device = device))
+        target_idx += 1
+        val_losses.append(loss_class.item())
+
+    train_losses = np.array(train_losses)
+    val_losses = np.array(val_losses)
+    train_loss_class = np.mean(train_losses)
+    val_loss_class = np.mean(val_losses)
+
+    all_train_loss_class.append(train_loss_class)
+    all_val_loss_class.append(val_loss_class)
+
+    if val_loss_class < best_loss:
+      best_loss = val_loss_class
+      best_model_wts = copy.deepcopy(model_class.state_dict())
+
+    epoch_time = time() - epoch_time
+    logger.info(f'Epoch {epoch}: CLS TL: {train_loss_class:.3f}, CLS VL:{val_loss_class:.3f}, Epoch time: {epoch_time:.3f}s' )
+
+  return model_class, best_model_wts, all_train_loss_class, all_val_loss_class
+
+
+def train_model(model, model_class, train_dataset, val_dataset, criterion, criterion_class, logger, embedding_size, n_classes, train_target, val_target, seed, n_epochs_ae, n_epoch_class):
+
+  history = dict(train_ae=[], train_class=[], val_ae=[], val_class=[])
+
+  train_time = time()
+
+  model, best_model_wts, train_loss_ae, val_loss_ae = train_ae(model, n_epochs_ae, criterion, train_dataset, val_dataset, logger)
+  # model.load_state_dict(best_model_wts)
+  history['train_ae'].extend(train_loss_ae)
+  history['val_ae'].extend(val_loss_ae)
+
+  model = model.eval()
+  embeddings_train = []
+  with torch.no_grad():
+    for seq_true in train_dataset:
+      seq_true = seq_true.to(device)
+      embedding = model.encoder(seq_true).squeeze().to(device)
+      embeddings_train.append(embedding)
+  
+  embeddings_val = []
+  with torch.no_grad():
+    for seq_true in val_dataset:
+      seq_true = seq_true.to(device)
+      embedding = model.encoder(seq_true).squeeze().to(device)
+      embeddings_val.append(embedding)
+
+  model_class, best_model_class_wts, train_loss_class, val_loss_class = train_class(embeddings_train, embeddings_val, model_class, n_epoch_class, criterion_class, train_target, train_dataset, val_target, val_dataset, n_classes, logger)
+  # model_class.load_state_dict(best_model_class_wts)
+  history['train_class'].extend(train_loss_class)
+  history['val_class'].extend(val_loss_class)
+
+
   train_time = time() - train_time
   logger.info(f'Model Train Time: {train_time}s')
   return model.eval(), history
@@ -169,6 +227,7 @@ def plot_prediction(data, criterion, model, title, ax):
   ax.plot(predictions[0], label='reconstructed')
   ax.set_title(f'{title} (loss: {np.around(pred_losses[0], 2)})')
   ax.legend()
+  return pred_losses
   
 def create_dataset(df):
 
