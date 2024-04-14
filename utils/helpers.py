@@ -11,14 +11,13 @@ from sklearn import cluster
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def introduce_label_noise(y, epsilon):
+def introduce_label_noise(y, epsilon, n_classes):
 
     min_y = min(y)
     tmp_y = np.array([(i - min_y) for i in y])
 
     # Number of samples
     n_samples = tmp_y.shape[0]
-    n_classes = len(set(tmp_y))
     # Create the noise transition matrix
 
     T = np.full((n_classes, n_classes), epsilon / (n_classes - 1))
@@ -109,7 +108,7 @@ def train_ae(model, n_epochs, criterion, train_dataset, val_dataset, logger):
   return model, best_model_wts, all_train_loss_ae, all_val_loss_ae
 
 def train_class(embeddings_train, embeddings_val, model_class, n_epochs, criterion_class, train_target, train_dataset, val_target, val_dataset, n_classes, logger):
-  optimizer = torch.optim.Adam(model_class.parameters(), lr=1e-3)
+  optimizer = torch.optim.Adam(model_class.parameters(), lr=5e-3)
 
   best_model_wts = copy.deepcopy(model_class.state_dict())
   best_loss = 10000.0
@@ -176,10 +175,11 @@ def train_model(model, model_class, train_dataset, val_dataset, criterion, crite
 
   train_time = time()
 
-  model, best_model_wts, train_loss_ae, val_loss_ae = train_ae(model, n_epochs_ae, criterion, train_dataset, val_dataset, logger)
+  # model, best_model_wts, train_loss_ae, val_loss_ae = train_ae(model, n_epochs_ae, criterion, train_dataset, val_dataset, logger)
   # model.load_state_dict(best_model_wts)
-  history['train_ae'].extend(train_loss_ae)
-  history['val_ae'].extend(val_loss_ae)
+  # history['train_ae'].extend(train_loss_ae)
+  # history['val_ae'].extend(val_loss_ae)
+  model = torch.load('/home/sasisekhar/Desktop/SREA/modified_SREA/debug/Plane/08_04_2024__09_44_59/noise_0.3/model_ae.pth')
 
   model = model.eval()
   embeddings_train = []
@@ -197,7 +197,7 @@ def train_model(model, model_class, train_dataset, val_dataset, criterion, crite
       embeddings_val.append(embedding)
 
   model_class, best_model_class_wts, train_loss_class, val_loss_class = train_class(embeddings_train, embeddings_val, model_class, n_epoch_class, criterion_class, train_target, train_dataset, val_target, val_dataset, n_classes, logger)
-  # model_class.load_state_dict(best_model_class_wts)
+  model_class.load_state_dict(best_model_class_wts)
   history['train_class'].extend(train_loss_class)
   history['val_class'].extend(val_loss_class)
 
